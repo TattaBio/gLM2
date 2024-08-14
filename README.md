@@ -52,7 +52,12 @@ with torch.no_grad():
 
 We provide a [script](https://github.com/TattaBio/gLM2/blob/main/categorical_jacobian_gLM2.ipynb) to visualize protein-protein interaction by computing the gLM2 categorical jacobian ([Zhang et al. 2024](https://www.biorxiv.org/content/10.1101/2024.01.30.577970v1)).
 
-For example, gLM2 predicts interactions between 2ONK_A (ModA) and 2ONK_C (ModC). TODO: add figure.
+For example, gLM2 correctly predicts interactions between 2ONK_A (ModA) and 2ONK_C (ModC).
+In comparison, ESM2 and Evo do not predict any interactions.
+
+<p align="left">
+  <img src="./docs/images/ppi_figure.png" width="669" height="364" alt="PPI Figure">
+</p>
 
 ## Training Data
 gLM2 is trained on the [`OMG`](https://huggingface.co/datasets/tattabio/OMG) dataset.
