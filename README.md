@@ -1,7 +1,7 @@
 <h1 align="center">gLM2: A mixed-modality Genomic Language Model</h1>
 
 <p align="center" style="font-size:0;">
-  <a href="https://www.biorxiv.org/content/XXX" style="text-decoration: none; border: none;"><img alt="bioRxiv URL" src="https://img.shields.io/badge/bioRxiv-XXX.svg" style="border: none;"></a><a href="https://huggingface.co/tattabio/gLM2_650M" style="text-decoration: none; border: none;"><img alt="Huggingface URL" src="https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-md.svg" style="border: none;"></a>
+  <a href="https://www.biorxiv.org/content/10.1101/2024.08.14.607850v1" style="text-decoration: none; border: none;"><img alt="bioRxiv URL" src="https://img.shields.io/badge/bioRxiv-607850v1.svg" style="border: none;"></a><a href="https://huggingface.co/tattabio/gLM2_650M" style="text-decoration: none; border: none;"><img alt="Huggingface URL" src="https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-md.svg" style="border: none;"></a>
 </p>
 
 <h4 align="center">
@@ -68,7 +68,15 @@ We use an embedding distance threshold of 1e-3, resulting in 42% of the dataset 
 
 ## Citing
 
-gLM2 was introduced in "[The OMG dataset: An Open MetaGenomic corpus for mixed-modality genomic language modeling
-]()", feel free to cite:
+gLM2 was introduced in "[The OMG dataset: An Open MetaGenomic corpus for mixed-modality genomic language modeling](https://www.biorxiv.org/content/10.1101/2024.08.14.607850v1)", feel free to cite:
 
-TODO: add bibtex citation
+```
+@article{Cornman2024,
+  title = {The OMG dataset: An Open MetaGenomic corpus for mixed-modality genomic language modeling},
+  url = {https://www.biorxiv.org/content/early/2024/08/17/2024.08.14.607850},
+  DOI = {10.1101/2024.08.14.607850},
+  publisher = {Cold Spring Harbor Laboratory},
+  author = {Cornman, Andre and West-Roberts, Jacob and Camargo, Antonio Pedro and Roux, Simon and Beracochea, Martin and Mirdita, Milot and Ovchinnikov, Sergey and Hwang, Yunha},
+  year = {2024},
+}
+```
