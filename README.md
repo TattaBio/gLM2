@@ -30,7 +30,6 @@ CDS elements are tokenized using per-amino acid tokens, and IGS elements are tok
 
 ## Usage
 
-First, install flash attention: `pip install flash-attn --no-build-isolation`
 ```python
 import torch
 from transformers import AutoModel, AutoTokenizer
