@@ -1,12 +1,11 @@
 """PyTorch gLM2 model.
 
-Requires flash attention.
 Some modules adapted from:
 https://github.com/meta-llama/llama/blob/main/llama/model.py
 """
 
 import torch
-from einops import rearrange
+from einops import rearrange, repeat
 from typing import Optional, Tuple, Union
 from torch import nn
 from torch.nn import CrossEntropyLoss
@@ -16,29 +15,49 @@ from transformers.modeling_outputs import (
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
-
-try:
-    from flash_attn.ops.activations import swiglu
-    from flash_attn.layers.rotary import apply_rotary_emb_func
-    from flash_attn import (
-        flash_attn_kvpacked_func,
-        flash_attn_varlen_kvpacked_func,
-    )
-    from flash_attn.bert_padding import pad_input, unpad_input
-except ImportError:
-    raise ImportError(
-        "gLM2 requires flash attention: `pip install flash-attn --no-build-isolation`")
-
 from .configuration_glm2 import gLM2Config
 
-
 logger = logging.get_logger(__name__)
+
+
+def rotate_half(x, interleaved=False):
+    if not interleaved:
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2, x1), dim=-1)
+    else:
+        x1, x2 = x[..., ::2], x[..., 1::2]
+        return rearrange(
+            torch.stack((-x2, x1), dim=-1), "... d two -> ... (d two)", two=2
+        )
+
+
+def apply_rotary_emb_torch(x, cos, sin, interleaved=False):
+    """
+    x: (batch_size, seqlen, nheads, headdim)
+    cos, sin: (seqlen, rotary_dim / 2) or (batch_size, seqlen, rotary_dim / 2)
+    """
+    ro_dim = cos.shape[-1] * 2
+    assert ro_dim <= x.shape[-1]
+    cos = repeat(
+        cos, "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)"
+    )
+    sin = repeat(
+        sin, "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)"
+    )
+    return torch.cat(
+        [
+            x[..., :ro_dim] * cos +
+            rotate_half(x[..., :ro_dim], interleaved) * sin,
+            x[..., ro_dim:],
+        ],
+        dim=-1,
+    )
 
 
 class RotaryEmbedding(torch.nn.Module):
     """
     Copied from https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/layers/rotary.py.
-    Changed to only support passing in q or k individually, so that we can use varlen rotary.
+    Changed to use the torch version of apply_rotary_emb_func.
     """
 
     def __init__(
@@ -136,66 +155,26 @@ class RotaryEmbedding(torch.nn.Module):
 
     def forward(
         self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        seqlen_offset: Union[int, torch.Tensor] = 0,
-        cu_seqlens: Optional[torch.Tensor] = None,
+        qkv: torch.Tensor,
         max_seqlen: Optional[int] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        q: (batch, seqlen, nheads, headdim). If cu_seqlens is not None,
-            shape (total_seqlen, nheads, headdim).
-        k: (batch, seqlen, nheads, headdim). If cu_seqlens is not None,
-            shape (total_seqlen, nheads, headdim).
-        seqlen_offset: (batch_size,) or int. Each sequence in x is shifted by this amount.
-            Most commonly used in inference when we have KV cache.
-            If it's a tensor of shape (batch_size,), then to update the cos / sin cache, one
-            should pass in max_seqlen, which will update the cos / sin cache up to that length.
-        Apply rotary embedding *inplace* to qkv and / or kv.
+        qkv: (batch, seqlen, 3, nheads, headdim)
         """
-        if cu_seqlens is not None:
-            assert max_seqlen is not None
-        seqlen = q.shape[1] if max_seqlen is None else max_seqlen
-        if max_seqlen is not None:
+        seqlen = qkv.shape[1]
+        if seqlen > self._seq_len_cached:
             self._update_cos_sin_cache(
-                max_seqlen, device=q.device, dtype=q.dtype)
-        elif isinstance(seqlen_offset, int):
+                seqlen, device=qkv.device, dtype=qkv.dtype)
+        elif max_seqlen is not None:
             self._update_cos_sin_cache(
-                seqlen + seqlen_offset, device=q.device, dtype=q.dtype
-            )
-        q = apply_rotary_emb_func(
-            q,
-            self._cos_cached,
-            self._sin_cached,
-            interleaved=self.interleaved,
-            inplace=True,
-            seqlen_offsets=seqlen_offset,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
+                max_seqlen, device=qkv.device, dtype=qkv.dtype)
+        q_rot = apply_rotary_emb_torch(
+            qkv[:, :, 0], self._cos_cached, self._sin_cached, self.interleaved
         )
-        if self.scale is None:
-            k = apply_rotary_emb_func(
-                k,
-                self._cos_cached,
-                self._sin_cached,
-                interleaved=self.interleaved,
-                inplace=True,
-                seqlen_offsets=seqlen_offset,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-            )
-        else:
-            k = apply_rotary_emb_func(
-                k,
-                self._cos_k_cached,
-                self._sin_k_cached,
-                interleaved=self.interleaved,
-                inplace=True,
-                seqlen_offsets=seqlen_offset,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-            )
-        return q, k
+        k_rot = apply_rotary_emb_torch(
+            qkv[:, :, 1], self._cos_cached, self._sin_cached, self.interleaved
+        )
+        return torch.stack((q_rot, k_rot, qkv[:, :, 2]), dim=2)
 
 
 # @torch.jit.script
@@ -239,67 +218,33 @@ class Attention(nn.Module):
 
         self.rotary_emb = RotaryEmbedding(self.head_dim)
 
-    def _forward_varlen(
-        self,
-        x: torch.Tensor,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        max_seq_len: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        total_seqlen, h_size = x.shape
-        qkv = self.wqkv(x)
-        q, k, v = torch.split(qkv, self.n_heads * self.head_dim, dim=-1)
-
-        q = q.view(total_seqlen, self.n_heads, self.head_dim)
-        k = k.view(total_seqlen, self.n_heads, self.head_dim)
-        v = v.view(total_seqlen, self.n_heads, self.head_dim)
-
-        q, k = self.rotary_emb(
-            q, k, cu_seqlens=cu_seqlens, max_seqlen=max_seq_len)
-
-        # (seqlen, 2, n_heads, head_dim)
-        kv = torch.stack([k, v], 1)
-
-        # (seqlen, n_heads, head_dim)
-        output = flash_attn_varlen_kvpacked_func(
-            q,
-            kv,
-            cu_seqlens_q=cu_seqlens,
-            cu_seqlens_k=cu_seqlens,
-            max_seqlen_q=max_seq_len,
-            max_seqlen_k=max_seq_len,
-            dropout_p=0.0,
-            causal=False,
-        )
-        output = output.view(total_seqlen, h_size)
-        return self.wo(output)
-
     def forward(
         self,
         x: torch.Tensor,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        max_seq_len: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if cu_seqlens is not None:
-            assert max_seq_len is not None
-            return self._forward_varlen(x, cu_seqlens, max_seq_len)
-
         bsz, seqlen, h_size = x.shape
         qkv = self.wqkv(x)
-        q, k, v = torch.split(qkv, self.n_heads * self.head_dim, dim=-1)
-        q = q.view(bsz, seqlen, self.n_heads, self.head_dim)
-        k = k.view(bsz, seqlen, self.n_heads, self.head_dim)
-        v = v.view(bsz, seqlen, self.n_heads, self.head_dim)
 
-        q, k = self.rotary_emb(q, k)
-        # (bs, seqlen, 2, n_heads, head_dim)
-        kv = torch.stack([k, v], 2)
+        qkv = qkv.view(bsz, seqlen, 3, self.n_heads, self.head_dim)
+        qkv = self.rotary_emb(qkv)
 
-        output = flash_attn_kvpacked_func(
-            q,
-            kv,
-            dropout_p=0.0,
-            causal=False,
+        # (batch, nheads, 3, seqlen, headdim)
+        qkv = torch.transpose(qkv, 3, 1)
+        q = qkv[:, :, 0]
+        k = qkv[:, :, 1]
+        v = qkv[:, :, 2]
+        if attention_mask is not None:
+            attention_mask = attention_mask[:, None, None, :]
+            attention_mask = attention_mask.expand(
+                bsz, self.n_heads, seqlen, seqlen
+            ).bool()
+        # [B, heads, seq, D]
+        output = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=attention_mask
         )
+        output = output.permute(0, 2, 1, 3).contiguous()
+
         output = output.view(bsz, seqlen, h_size)
         return self.wo(output)
 
@@ -334,7 +279,7 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
-        return self.w2(swiglu(self.w1(x), self.w3(x)))
+        return self.w2(nn.functional.silu(self.w1(x)) * self.w3(x))
 
 
 class TransformerBlock(nn.Module):
@@ -356,12 +301,10 @@ class TransformerBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        max_seq_len: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        r = self.attention(
-            self.attention_norm(x), cu_seqlens, max_seq_len
-        )
+        r = self.attention(self.attention_norm(
+            x), attention_mask=attention_mask)
         h = x + r
         r = self.feed_forward(self.ffn_norm(h))
         out = h + r
@@ -386,25 +329,11 @@ class TransformerLayers(nn.Module):
             raise ValueError(
                 f"Input feature dim should be {self.config.dim}, but input has shape {x.shape}"
             )
-        batch_size, seq_len = x.shape[:2]
-        should_unpad = attention_mask is not None and not attention_mask.all()
-        if should_unpad:
-            x, indices, cu_seqlens, max_seq_len_in_batch = unpad_input(
-                x, attention_mask
-            )
-        else:
-            indices, cu_seqlens, max_seq_len_in_batch = None, None, None
         hiddens = []
         for layer in self.layers:
-            x = layer(x, cu_seqlens, max_seq_len_in_batch)
+            x = layer(x, attention_mask=attention_mask)
             if return_all_hiddens:
                 hiddens.append(x)
-
-        if should_unpad:
-            x = pad_input(x, indices, batch_size, seq_len)
-            if return_all_hiddens:
-                hiddens = [pad_input(h, indices, batch_size, seq_len)
-                           for h in hiddens]
 
         if return_all_hiddens:
             return x, hiddens
