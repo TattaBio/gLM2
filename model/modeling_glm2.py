@@ -38,6 +38,8 @@ def apply_rotary_emb_torch(x, cos, sin, interleaved=False):
     """
     ro_dim = cos.shape[-1] * 2
     assert ro_dim <= x.shape[-1]
+    seqlen = x.shape[1]
+    cos, sin = cos[:seqlen], sin[:seqlen]
     cos = repeat(
         cos, "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)"
     )
