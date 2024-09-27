@@ -23,10 +23,11 @@ gLM2 is trained at two scales: [150M](https://huggingface.co/tattabio/gLM2_150M)
 ## Model Description
 gLM2 is a transformer encoder trained with the masked language modeling objective.  
 It encodes a genomic contig as a sequence of protein coding sequences (CDS) and DNA inter-genic sequences (IGS).  
-CDS elements are tokenized using per-amino acid tokens, and IGS elements are tokenized using byte-pair encoding with a vocabulary size of 4,096.  
+CDS elements are tokenized using per-amino acid tokens, and IGS elements are tokenized using per-nucleotide tokens.  
 - To encode the genomic strand, we prepended each genomic element with a special token, either `<+>` or `<->` to indicate the positive and negative strands.
 - To avoid collision between amino acid and nucleotide tokens, the tokenizer expects all amino acids to be uppercase, and all nucleotides to be lowercase.
 
+UPDATE(09/2024): We updated the model with longer context length (4096 tokens vs. 2048 tokens) and per-nucleotide IGS tokenization.
 
 ## Usage
 
@@ -61,7 +62,7 @@ In comparison, ESM2 and Evo do not predict any interactions.
 ## Training Data
 gLM2 is trained on the [`OMG`](https://huggingface.co/datasets/tattabio/OMG) dataset.
 To improve the dataset balance and remove near-duplicate examples, the data is tokenized and pruned by applying Semantic Deduplication ([SemDedup](https://arxiv.org/abs/2303.09540)).  
-We use an embedding distance threshold of 1e-3, resulting in 42% of the dataset being pruned. 
+We use an embedding distance threshold of 2e-3, resulting in 49% of the dataset being pruned. 
 
 
 
